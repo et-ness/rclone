@@ -46,8 +46,8 @@ import (
 
 // Global constants
 const (
-	minSleepPacer   = 10 * time.Millisecond
-	maxSleepPacer   = 2 * time.Second
+	minSleepPacer   = 100 * time.Millisecond
+	maxSleepPacer   = 5 * time.Second
 	decayConstPacer = 2          // bigger for slower decay, exponential
 	metaExpirySec   = 20 * 60    // meta server expiration time
 	serverExpirySec = 3 * 60     // download server expiration time
@@ -85,10 +85,11 @@ func init() {
 		Name:        "mailru",
 		Description: "Mail.ru Cloud",
 		NewFs:       NewFs,
-		Options: []fs.Option{{
-			Name:     "user",
-			Help:     "User name (usually email).",
-			Required: true,
+		Options: append(oauthutil.SharedOptions, []fs.Option{{
+			Name:      "user",
+			Help:      "User name (usually email).",
+			Required:  true,
+			Sensitive: true,
 		}, {
 			Name: "pass",
 			Help: `Password.
@@ -213,7 +214,7 @@ Supported quirks: atomicmkdir binlist unknowndirs`,
 				encoder.EncodeWin | // :?"*<>|
 				encoder.EncodeBackSlash |
 				encoder.EncodeInvalidUtf8),
-		}},
+		}}...),
 	})
 }
 

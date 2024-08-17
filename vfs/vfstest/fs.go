@@ -26,7 +26,6 @@ import (
 	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/vfs/vfscommon"
-	"github.com/rclone/rclone/vfs/vfsflags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +41,7 @@ const (
 //
 // If useVFS is not set then it runs the mount in a subprocess in
 // order to avoid kernel deadlocks.
-func RunTests(t *testing.T, useVFS bool, mountFn mountlib.MountFn) {
+func RunTests(t *testing.T, useVFS bool, minimumRequiredCacheMode vfscommon.CacheMode, enableCacheTests bool, mountFn mountlib.MountFn) {
 	flag.Parse()
 	if isSubProcess() {
 		startMount(mountFn, useVFS, *runMount)
@@ -50,16 +49,19 @@ func RunTests(t *testing.T, useVFS bool, mountFn mountlib.MountFn) {
 	}
 	tests := []struct {
 		cacheMode vfscommon.CacheMode
-		writeBack time.Duration
+		writeBack fs.Duration
 	}{
 		{cacheMode: vfscommon.CacheModeOff},
 		{cacheMode: vfscommon.CacheModeMinimal},
 		{cacheMode: vfscommon.CacheModeWrites},
 		{cacheMode: vfscommon.CacheModeFull},
-		{cacheMode: vfscommon.CacheModeFull, writeBack: 100 * time.Millisecond},
+		{cacheMode: vfscommon.CacheModeFull, writeBack: fs.Duration(100 * time.Millisecond)},
 	}
 	for _, test := range tests {
-		vfsOpt := vfsflags.Opt
+		if test.cacheMode < minimumRequiredCacheMode {
+			continue
+		}
+		vfsOpt := vfscommon.Opt
 		vfsOpt.CacheMode = test.cacheMode
 		vfsOpt.WriteBack = test.writeBack
 		run = newRun(useVFS, &vfsOpt, mountFn)
@@ -78,7 +80,9 @@ func RunTests(t *testing.T, useVFS bool, mountFn mountlib.MountFn) {
 			t.Run("TestDirRenameEmptyDir", TestDirRenameEmptyDir)
 			t.Run("TestDirRenameFullDir", TestDirRenameFullDir)
 			t.Run("TestDirModTime", TestDirModTime)
-			t.Run("TestDirCacheFlush", TestDirCacheFlush)
+			if enableCacheTests {
+				t.Run("TestDirCacheFlush", TestDirCacheFlush)
+			}
 			t.Run("TestDirCacheFlushOnDirRename", TestDirCacheFlushOnDirRename)
 			t.Run("TestFileModTime", TestFileModTime)
 			t.Run("TestFileModTimeWithOpenWriters", TestFileModTimeWithOpenWriters)
@@ -230,10 +234,10 @@ func (r *Run) readLocal(t *testing.T, dir dirMap, filePath string) {
 		if fi.IsDir() {
 			dir[name+"/"] = struct{}{}
 			r.readLocal(t, dir, name)
-			assert.Equal(t, r.vfsOpt.DirPerms&os.ModePerm, fi.Mode().Perm())
+			assert.Equal(t, os.FileMode(r.vfsOpt.DirPerms)&os.ModePerm, fi.Mode().Perm())
 		} else {
 			dir[fmt.Sprintf("%s %d", name, fi.Size())] = struct{}{}
-			assert.Equal(t, r.vfsOpt.FilePerms&os.ModePerm, fi.Mode().Perm())
+			assert.Equal(t, os.FileMode(r.vfsOpt.FilePerms)&os.ModePerm, fi.Mode().Perm())
 		}
 	}
 }
@@ -310,7 +314,7 @@ func writeFile(filename string, data []byte, perm os.FileMode) error {
 
 func (r *Run) createFile(t *testing.T, filepath string, contents string) {
 	filepath = r.path(filepath)
-	err := writeFile(filepath, []byte(contents), 0600)
+	err := writeFile(filepath, []byte(contents), 0644)
 	require.NoError(t, err)
 	r.waitForWriters()
 }
@@ -324,7 +328,7 @@ func (r *Run) readFile(t *testing.T, filepath string) string {
 
 func (r *Run) mkdir(t *testing.T, filepath string) {
 	filepath = r.path(filepath)
-	err := r.os.Mkdir(filepath, 0700)
+	err := r.os.Mkdir(filepath, 0755)
 	require.NoError(t, err)
 }
 
@@ -372,5 +376,5 @@ func TestRoot(t *testing.T) {
 	fi, err := os.Lstat(run.mountPath)
 	require.NoError(t, err)
 	assert.True(t, fi.IsDir())
-	assert.Equal(t, run.vfsOpt.DirPerms&os.ModePerm, fi.Mode().Perm())
+	assert.Equal(t, os.FileMode(run.vfsOpt.DirPerms)&os.ModePerm, fi.Mode().Perm())
 }

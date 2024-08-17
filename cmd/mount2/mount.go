@@ -1,5 +1,4 @@
 //go:build linux || (darwin && amd64)
-// +build linux darwin,amd64
 
 // Package mount2 implements a FUSE mounting system for rclone remotes.
 package mount2
@@ -8,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"time"
 
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -83,7 +83,7 @@ func mountOptions(fsys *FS, f fs.Fs, opt *mountlib.Options) (mountOpts *fuse.Mou
 			// (128 kiB on Linux) and cannot be larger than MaxWrite.
 			//
 			// MaxReadAhead only affects buffered reads (=non-direct-io), but even then, the
-			// kernel can and does send larger reads to satisfy read reqests from applications
+			// kernel can and does send larger reads to satisfy read requests from applications
 			// (up to MaxWrite or VM_READAHEAD_PAGES=128 kiB, whichever is less).
 			MaxReadAhead int
 
@@ -216,8 +216,8 @@ func mount(VFS *vfs.VFS, mountpoint string, opt *mountlib.Options) (<-chan error
 	// FIXME fill out
 	opts := fusefs.Options{
 		MountOptions: *mountOpts,
-		EntryTimeout: &opt.AttrTimeout,
-		AttrTimeout:  &opt.AttrTimeout,
+		EntryTimeout: (*time.Duration)(&opt.AttrTimeout),
+		AttrTimeout:  (*time.Duration)(&opt.AttrTimeout),
 		GID:          VFS.Opt.GID,
 		UID:          VFS.Opt.UID,
 	}

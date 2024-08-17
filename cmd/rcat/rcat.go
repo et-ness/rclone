@@ -20,15 +20,13 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.Int64VarP(cmdFlags, &size, "size", "", size, "File size hint to preallocate")
+	flags.Int64VarP(cmdFlags, &size, "size", "", size, "File size hint to preallocate", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "rcat remote:path",
 	Short: `Copies standard input to file on remote.`,
-	Long: `
-rclone rcat reads from standard input (stdin) and copies it to a
-single remote file.
+	Long: `Reads from standard input (stdin) and copies it to a single remote file.
 
     echo "hello world" | rclone rcat remote:path/to/file
     ffmpeg - | rclone rcat remote:path/to/file
@@ -59,6 +57,7 @@ off caching it locally and then ` + "`rclone move`" + ` it to the
 destination which can use retries.`,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.38",
+		"groups":            "Important",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)

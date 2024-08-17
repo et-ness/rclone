@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
@@ -29,7 +28,6 @@ import (
 	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/fs/rc/jobs"
-	"github.com/rclone/rclone/fs/rc/rcflags"
 	"github.com/rclone/rclone/fs/rc/webgui"
 	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/lib/http/serve"
@@ -38,7 +36,6 @@ import (
 )
 
 var promHandler http.Handler
-var onlyOnceWarningAllowOrigin sync.Once
 
 func init() {
 	rcloneCollector := accounting.NewRcloneCollector(context.Background())
@@ -103,7 +100,7 @@ func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) (*Serve
 		} else {
 			if opt.Auth.BasicUser == "" && opt.Auth.HtPasswd == "" {
 				opt.Auth.BasicUser = "gui"
-				fs.Infof(nil, "No username specified. Using default username: %s \n", rcflags.Opt.Auth.BasicUser)
+				fs.Infof(nil, "No username specified. Using default username: %s \n", rc.Opt.Auth.BasicUser)
 			}
 			if opt.Auth.BasicPass == "" && opt.Auth.HtPasswd == "" {
 				randomPass, err := random.Password(128)
@@ -202,6 +199,7 @@ func (s *Server) Serve() error {
 func writeError(path string, in rc.Params, w http.ResponseWriter, err error, status int) {
 	fs.Errorf(nil, "rc: %q: error: %v", path, err)
 	params, status := rc.Error(path, in, err, status)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	err = rc.WriteJSON(w, params)
 	if err != nil {
@@ -213,28 +211,6 @@ func writeError(path string, in rc.Params, w http.ResponseWriter, err error, sta
 // handler reads incoming requests and dispatches them
 func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimLeft(r.URL.Path, "/")
-
-	allowOrigin := rcflags.Opt.AccessControlAllowOrigin
-	if allowOrigin != "" {
-		onlyOnceWarningAllowOrigin.Do(func() {
-			if allowOrigin == "*" {
-				fs.Logf(nil, "Warning: Allow origin set to *. This can cause serious security problems.")
-			}
-		})
-		w.Header().Add("Access-Control-Allow-Origin", allowOrigin)
-	} else {
-		urls := s.server.URLs()
-		if len(urls) == 1 {
-			w.Header().Add("Access-Control-Allow-Origin", urls[0])
-		} else {
-			fs.Errorf(nil, "Warning, need exactly 1 URL for Access-Control-Allow-Origin, got %d %q", len(urls), urls)
-		}
-	}
-
-	// echo back access control headers client needs
-	//reqAccessHeaders := r.Header.Get("Access-Control-Request-Headers")
-	w.Header().Add("Access-Control-Request-Method", "POST, OPTIONS, GET, HEAD")
-	w.Header().Add("Access-Control-Allow-Headers", "authorization, Content-Type")
 
 	switch r.Method {
 	case "POST":
@@ -318,6 +294,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, path string)
 	}
 
 	fs.Debugf(nil, "rc: %q: reply %+v: %v", path, out, err)
+	w.Header().Set("Content-Type", "application/json")
 	err = rc.WriteJSON(w, out)
 	if err != nil {
 		// can't return the error at this point - but have a go anyway
@@ -331,14 +308,14 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request, path stri
 }
 
 func (s *Server) serveRoot(w http.ResponseWriter, r *http.Request) {
-	remotes := config.FileSections()
-	sort.Strings(remotes)
+	remoteNames := config.GetRemoteNames()
+	sort.Strings(remoteNames)
 	directory := serve.NewDirectory("", s.server.HTMLTemplate())
 	directory.Name = "List of all rclone remotes."
 	q := url.Values{}
-	for _, remote := range remotes {
-		q.Set("fs", remote)
-		directory.AddHTMLEntry("["+remote+":]", true, -1, time.Time{})
+	for _, remoteName := range remoteNames {
+		q.Set("fs", remoteName)
+		directory.AddHTMLEntry("["+remoteName+":]", true, -1, time.Time{})
 	}
 	sortParm := r.URL.Query().Get("sort")
 	orderParm := r.URL.Query().Get("order")
@@ -364,8 +341,11 @@ func (s *Server) serveRemote(w http.ResponseWriter, r *http.Request, path string
 		directory := serve.NewDirectory(path, s.server.HTMLTemplate())
 		for _, entry := range entries {
 			_, isDir := entry.(fs.Directory)
-			//directory.AddHTMLEntry(entry.Remote(), isDir, entry.Size(), entry.ModTime(r.Context()))
-			directory.AddHTMLEntry(entry.Remote(), isDir, entry.Size(), time.Time{})
+			var modTime time.Time
+			if !s.opt.ServeNoModTime {
+				modTime = entry.ModTime(r.Context())
+			}
+			directory.AddHTMLEntry(entry.Remote(), isDir, entry.Size(), modTime)
 		}
 		sortParm := r.URL.Query().Get("sort")
 		orderParm := r.URL.Query().Get("order")

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/spf13/pflag"
@@ -27,8 +28,7 @@ import (
 // Help returns text describing the http server to add to the command
 // help.
 func Help(prefix string) string {
-	help := `
-### Server options
+	help := `### Server options
 
 Use ` + "`--{{ .Prefix }}addr`" + ` to specify which IP address and port the server should
 listen on, eg ` + "`--{{ .Prefix }}addr 1.2.3.4:8000` or `--{{ .Prefix }}addr :8080`" + ` to listen to all
@@ -71,9 +71,10 @@ of that with the CA certificate.  ` + "`--k{{ .Prefix }}ey`" + ` should be the P
 private key and ` + "`--{{ .Prefix }}client-ca`" + ` should be the PEM encoded client
 certificate authority certificate.
 
---{{ .Prefix }}min-tls-version is minimum TLS version that is acceptable. Valid
+` + "`--{{ .Prefix }}min-tls-version`" + ` is minimum TLS version that is acceptable. Valid
   values are "tls1.0", "tls1.1", "tls1.2" and "tls1.3" (default
   "tls1.0").
+
 `
 	tmpl, err := template.New("server help").Parse(help)
 	if err != nil {
@@ -96,32 +97,77 @@ certificate authority certificate.
 // Middleware function signature required by chi.Router.Use()
 type Middleware func(http.Handler) http.Handler
 
+// ConfigInfo descripts the Options in use
+var ConfigInfo = fs.Options{{
+	Name:    "addr",
+	Default: []string{"127.0.0.1:8080"},
+	Help:    "IPaddress:Port or :Port to bind server to",
+}, {
+	Name:    "server_read_timeout",
+	Default: 1 * time.Hour,
+	Help:    "Timeout for server reading data",
+}, {
+	Name:    "server_write_timeout",
+	Default: 1 * time.Hour,
+	Help:    "Timeout for server writing data",
+}, {
+	Name:    "max_header_bytes",
+	Default: 4096,
+	Help:    "Maximum size of request header",
+}, {
+	Name:    "cert",
+	Default: "",
+	Help:    "TLS PEM key (concatenation of certificate and CA certificate)",
+}, {
+	Name:    "key",
+	Default: "",
+	Help:    "TLS PEM Private key",
+}, {
+	Name:    "client_ca",
+	Default: "",
+	Help:    "Client certificate authority to verify clients with",
+}, {
+	Name:    "baseurl",
+	Default: "",
+	Help:    "Prefix for URLs - leave blank for root",
+}, {
+	Name:    "min_tls_version",
+	Default: "tls1.0",
+	Help:    "Minimum TLS version that is acceptable",
+}, {
+	Name:    "allow_origin",
+	Default: "",
+	Help:    "Origin which cross-domain request (CORS) can be executed from",
+}}
+
 // Config contains options for the http Server
 type Config struct {
-	ListenAddr         []string      // Port to listen on
-	BaseURL            string        // prefix to strip from URLs
-	ServerReadTimeout  time.Duration // Timeout for server reading data
-	ServerWriteTimeout time.Duration // Timeout for server writing data
-	MaxHeaderBytes     int           // Maximum size of request header
-	TLSCert            string        // Path to TLS PEM key (concatenation of certificate and CA certificate)
-	TLSKey             string        // Path to TLS PEM Private key
-	TLSCertBody        []byte        // TLS PEM key (concatenation of certificate and CA certificate) body, ignores TLSCert
-	TLSKeyBody         []byte        // TLS PEM Private key body, ignores TLSKey
-	ClientCA           string        // Client certificate authority to verify clients with
-	MinTLSVersion      string        // MinTLSVersion contains the minimum TLS version that is acceptable.
+	ListenAddr         []string      `config:"addr"`                 // Port to listen on
+	BaseURL            string        `config:"baseurl"`              // prefix to strip from URLs
+	ServerReadTimeout  time.Duration `config:"server_read_timeout"`  // Timeout for server reading data
+	ServerWriteTimeout time.Duration `config:"server_write_timeout"` // Timeout for server writing data
+	MaxHeaderBytes     int           `config:"max_header_bytes"`     // Maximum size of request header
+	TLSCert            string        `config:"cert"`                 // Path to TLS PEM key (concatenation of certificate and CA certificate)
+	TLSKey             string        `config:"key"`                  // Path to TLS PEM Private key
+	TLSCertBody        []byte        `config:"-"`                    // TLS PEM key (concatenation of certificate and CA certificate) body, ignores TLSCert
+	TLSKeyBody         []byte        `config:"-"`                    // TLS PEM Private key body, ignores TLSKey
+	ClientCA           string        `config:"client_ca"`            // Client certificate authority to verify clients with
+	MinTLSVersion      string        `config:"min_tls_version"`      // MinTLSVersion contains the minimum TLS version that is acceptable.
+	AllowOrigin        string        `config:"allow_origin"`         // AllowOrigin sets the Access-Control-Allow-Origin header
 }
 
 // AddFlagsPrefix adds flags for the httplib
 func (cfg *Config) AddFlagsPrefix(flagSet *pflag.FlagSet, prefix string) {
-	flags.StringArrayVarP(flagSet, &cfg.ListenAddr, prefix+"addr", "", cfg.ListenAddr, "IPaddress:Port or :Port to bind server to")
-	flags.DurationVarP(flagSet, &cfg.ServerReadTimeout, prefix+"server-read-timeout", "", cfg.ServerReadTimeout, "Timeout for server reading data")
-	flags.DurationVarP(flagSet, &cfg.ServerWriteTimeout, prefix+"server-write-timeout", "", cfg.ServerWriteTimeout, "Timeout for server writing data")
-	flags.IntVarP(flagSet, &cfg.MaxHeaderBytes, prefix+"max-header-bytes", "", cfg.MaxHeaderBytes, "Maximum size of request header")
-	flags.StringVarP(flagSet, &cfg.TLSCert, prefix+"cert", "", cfg.TLSCert, "TLS PEM key (concatenation of certificate and CA certificate)")
-	flags.StringVarP(flagSet, &cfg.TLSKey, prefix+"key", "", cfg.TLSKey, "TLS PEM Private key")
-	flags.StringVarP(flagSet, &cfg.ClientCA, prefix+"client-ca", "", cfg.ClientCA, "Client certificate authority to verify clients with")
-	flags.StringVarP(flagSet, &cfg.BaseURL, prefix+"baseurl", "", cfg.BaseURL, "Prefix for URLs - leave blank for root")
-	flags.StringVarP(flagSet, &cfg.MinTLSVersion, prefix+"min-tls-version", "", cfg.MinTLSVersion, "Minimum TLS version that is acceptable")
+	flags.StringArrayVarP(flagSet, &cfg.ListenAddr, prefix+"addr", "", cfg.ListenAddr, "IPaddress:Port or :Port to bind server to", prefix)
+	flags.DurationVarP(flagSet, &cfg.ServerReadTimeout, prefix+"server-read-timeout", "", cfg.ServerReadTimeout, "Timeout for server reading data", prefix)
+	flags.DurationVarP(flagSet, &cfg.ServerWriteTimeout, prefix+"server-write-timeout", "", cfg.ServerWriteTimeout, "Timeout for server writing data", prefix)
+	flags.IntVarP(flagSet, &cfg.MaxHeaderBytes, prefix+"max-header-bytes", "", cfg.MaxHeaderBytes, "Maximum size of request header", prefix)
+	flags.StringVarP(flagSet, &cfg.TLSCert, prefix+"cert", "", cfg.TLSCert, "TLS PEM key (concatenation of certificate and CA certificate)", prefix)
+	flags.StringVarP(flagSet, &cfg.TLSKey, prefix+"key", "", cfg.TLSKey, "TLS PEM Private key", prefix)
+	flags.StringVarP(flagSet, &cfg.ClientCA, prefix+"client-ca", "", cfg.ClientCA, "Client certificate authority to verify clients with", prefix)
+	flags.StringVarP(flagSet, &cfg.BaseURL, prefix+"baseurl", "", cfg.BaseURL, "Prefix for URLs - leave blank for root", prefix)
+	flags.StringVarP(flagSet, &cfg.MinTLSVersion, prefix+"min-tls-version", "", cfg.MinTLSVersion, "Minimum TLS version that is acceptable", prefix)
+	flags.StringVarP(flagSet, &cfg.AllowOrigin, prefix+"allow-origin", "", cfg.AllowOrigin, "Origin which cross-domain request (CORS) can be executed from", prefix)
 }
 
 // AddHTTPFlagsPrefix adds flags for the httplib
@@ -130,6 +176,9 @@ func AddHTTPFlagsPrefix(flagSet *pflag.FlagSet, prefix string, cfg *Config) {
 }
 
 // DefaultCfg is the default values used for Config
+//
+// Note that this needs to be kept in sync with ConfigInfo above and
+// can be removed when all callers have been converted.
 func DefaultCfg() Config {
 	return Config{
 		ListenAddr:         []string{"127.0.0.1:8080"},
@@ -226,8 +275,6 @@ func NewServer(ctx context.Context, options ...Option) (*Server, error) {
 		s.mux.Use(MiddlewareStripPrefix(s.cfg.BaseURL))
 	}
 
-	s.initAuth()
-
 	err := s.initTemplate()
 	if err != nil {
 		return nil, err
@@ -237,6 +284,10 @@ func NewServer(ctx context.Context, options ...Option) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	s.mux.Use(MiddlewareCORS(s.cfg.AllowOrigin))
+
+	s.initAuth()
 
 	for _, addr := range s.cfg.ListenAddr {
 		var url string
@@ -293,9 +344,17 @@ func NewServer(ctx context.Context, options ...Option) (*Server, error) {
 }
 
 func (s *Server) initAuth() {
+	s.usingAuth = false
+
+	authCertificateUserEnabled := s.tlsConfig != nil && s.tlsConfig.ClientAuth != tls.NoClientCert && s.auth.HtPasswd == "" && s.auth.BasicUser == ""
+	if authCertificateUserEnabled {
+		s.usingAuth = true
+		s.mux.Use(MiddlewareAuthCertificateUser())
+	}
+
 	if s.auth.CustomAuthFn != nil {
 		s.usingAuth = true
-		s.mux.Use(MiddlewareAuthCustom(s.auth.CustomAuthFn, s.auth.Realm))
+		s.mux.Use(MiddlewareAuthCustom(s.auth.CustomAuthFn, s.auth.Realm, authCertificateUserEnabled))
 		return
 	}
 
@@ -310,7 +369,6 @@ func (s *Server) initAuth() {
 		s.mux.Use(MiddlewareAuthBasic(s.auth.BasicUser, s.auth.BasicPass, s.auth.Realm, s.auth.Salt))
 		return
 	}
-	s.usingAuth = false
 }
 
 func (s *Server) initTemplate() error {

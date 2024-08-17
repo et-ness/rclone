@@ -1,6 +1,6 @@
 // Package cmd implements the rclone command
 //
-// It is in a sub package so it's internals can be re-used elsewhere
+// It is in a sub package so it's internals can be reused elsewhere
 package cmd
 
 // FIXME only attach the remote flags when using a remote???
@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"runtime"
 	"runtime/pprof"
 	"strconv"
@@ -29,16 +28,15 @@ import (
 	"github.com/rclone/rclone/fs/config/configflags"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/filter"
-	"github.com/rclone/rclone/fs/filter/filterflags"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fspath"
 	fslog "github.com/rclone/rclone/fs/log"
-	"github.com/rclone/rclone/fs/rc/rcflags"
+	"github.com/rclone/rclone/fs/rc"
 	"github.com/rclone/rclone/fs/rc/rcserver"
+	fssync "github.com/rclone/rclone/fs/sync"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/lib/buildinfo"
 	"github.com/rclone/rclone/lib/exitcode"
-	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/terminal"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -47,13 +45,10 @@ import (
 // Globals
 var (
 	// Flags
-	cpuProfile      = flags.StringP("cpuprofile", "", "", "Write cpu profile to file")
-	memProfile      = flags.StringP("memprofile", "", "", "Write memory profile to file")
-	statsInterval   = flags.DurationP("stats", "", time.Minute*1, "Interval between printing stats, e.g. 500ms, 60s, 5m (0 to disable)")
-	dataRateUnit    = flags.StringP("stats-unit", "", "bytes", "Show data rate in stats as either 'bits' or 'bytes' per second")
-	version         bool
-	retries         = flags.IntP("retries", "", 3, "Retry operations this many times if they fail")
-	retriesInterval = flags.DurationP("retries-sleep", "", 0, "Interval between retrying operations if they fail, e.g. 500ms, 60s, 5m (0 to disable)")
+	cpuProfile    = flags.StringP("cpuprofile", "", "", "Write cpu profile to file", "Debugging")
+	memProfile    = flags.StringP("memprofile", "", "", "Write memory profile to file", "Debugging")
+	statsInterval = flags.DurationP("stats", "", time.Minute*1, "Interval between printing stats, e.g. 500ms, 60s, 5m (0 to disable)", "Logging")
+	version       bool
 	// Errors
 	errorCommandNotFound    = errors.New("command not found")
 	errorUncategorized      = errors.New("uncategorized error")
@@ -121,7 +116,7 @@ func newFsFileAddFilter(remote string) (fs.Fs, string) {
 		if !fi.InActive() {
 			err := fmt.Errorf("can't limit to single files when using filters: %v", remote)
 			err = fs.CountError(err)
-			log.Fatalf(err.Error())
+			log.Fatal(err.Error())
 		}
 		// Limit transfers to this file
 		err := fi.AddFile(fileName)
@@ -253,7 +248,7 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 		stopStats = StartStats()
 	}
 	SigInfoHandler()
-	for try := 1; try <= *retries; try++ {
+	for try := 1; try <= ci.Retries; try++ {
 		cmdErr = f()
 		cmdErr = fs.CountError(cmdErr)
 		lastErr := accounting.GlobalStats().GetLastError()
@@ -262,7 +257,7 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 		}
 		if !Retry || !accounting.GlobalStats().Errored() {
 			if try > 1 {
-				fs.Errorf(nil, "Attempt %d/%d succeeded", try, *retries)
+				fs.Errorf(nil, "Attempt %d/%d succeeded", try, ci.Retries)
 			}
 			break
 		}
@@ -282,15 +277,15 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 			}
 		}
 		if lastErr != nil {
-			fs.Errorf(nil, "Attempt %d/%d failed with %d errors and: %v", try, *retries, accounting.GlobalStats().GetErrors(), lastErr)
+			fs.Errorf(nil, "Attempt %d/%d failed with %d errors and: %v", try, ci.Retries, accounting.GlobalStats().GetErrors(), lastErr)
 		} else {
-			fs.Errorf(nil, "Attempt %d/%d failed with %d errors", try, *retries, accounting.GlobalStats().GetErrors())
+			fs.Errorf(nil, "Attempt %d/%d failed with %d errors", try, ci.Retries, accounting.GlobalStats().GetErrors())
 		}
-		if try < *retries {
+		if try < ci.Retries {
 			accounting.GlobalStats().ResetErrors()
 		}
-		if *retriesInterval > 0 {
-			time.Sleep(*retriesInterval)
+		if ci.RetriesInterval > 0 {
+			time.Sleep(ci.RetriesInterval)
 		}
 	}
 	stopStats()
@@ -339,7 +334,6 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 		}
 	}
 	resolveExitCode(cmdErr)
-
 }
 
 // CheckArgs checks there are enough arguments and prints a message if not
@@ -386,6 +380,12 @@ func StartStats() func() {
 
 // initConfig is run by cobra after initialising the flags
 func initConfig() {
+	// Set the global options from the flags
+	err := fs.GlobalOptionsInit()
+	if err != nil {
+		log.Fatalf("Failed to initialise global options: %v", err)
+	}
+
 	ctx := context.Background()
 	ci := fs.GetConfig(ctx)
 
@@ -412,12 +412,6 @@ func initConfig() {
 		terminal.EnableColorsStdout()
 	}
 
-	// Load filters
-	err := filterflags.Reload(ctx)
-	if err != nil {
-		log.Fatalf("Failed to load filters: %v", err)
-	}
-
 	// Write the args for debug purposes
 	fs.Debugf("rclone", "Version %q starting with parameters %q", fs.Version, os.Args)
 
@@ -427,7 +421,7 @@ func initConfig() {
 	}
 
 	// Start the remote control server if configured
-	_, err = rcserver.Start(context.Background(), &rcflags.Opt)
+	_, err = rcserver.Start(context.Background(), &rc.Opt)
 	if err != nil {
 		log.Fatalf("Failed to start remote control: %v", err)
 	}
@@ -447,6 +441,11 @@ func initConfig() {
 		}
 		atexit.Register(func() {
 			pprof.StopCPUProfile()
+			err := f.Close()
+			if err != nil {
+				err = fs.CountError(err)
+				log.Fatal(err)
+			}
 		})
 	}
 
@@ -471,13 +470,6 @@ func initConfig() {
 			}
 		})
 	}
-
-	if m, _ := regexp.MatchString("^(bits|bytes)$", *dataRateUnit); !m {
-		fs.Errorf(nil, "Invalid unit passed to --stats-unit. Defaulting to bytes.")
-		ci.DataRateUnit = "bytes"
-	} else {
-		ci.DataRateUnit = *dataRateUnit
-	}
 }
 
 func resolveExitCode(err error) {
@@ -501,6 +493,8 @@ func resolveExitCode(err error) {
 		os.Exit(exitcode.UncategorizedError)
 	case errors.Is(err, accounting.ErrorMaxTransferLimitReached):
 		os.Exit(exitcode.TransferExceeded)
+	case errors.Is(err, fssync.ErrorMaxDurationReached):
+		os.Exit(exitcode.DurationExceeded)
 	case fserrors.ShouldRetry(err):
 		os.Exit(exitcode.RetryError)
 	case fserrors.IsNoRetryError(err), fserrors.IsNoLowLevelRetryError(err):
@@ -518,50 +512,18 @@ var backendFlags map[string]struct{}
 func AddBackendFlags() {
 	backendFlags = map[string]struct{}{}
 	for _, fsInfo := range fs.Registry {
-		done := map[string]struct{}{}
+		flags.AddFlagsFromOptions(pflag.CommandLine, fsInfo.Prefix, fsInfo.Options)
+		// Store the backend flag names for the help generator
 		for i := range fsInfo.Options {
 			opt := &fsInfo.Options[i]
-			// Skip if done already (e.g. with Provider options)
-			if _, doneAlready := done[opt.Name]; doneAlready {
-				continue
-			}
-			done[opt.Name] = struct{}{}
-			// Make a flag from each option
 			name := opt.FlagName(fsInfo.Prefix)
-			found := pflag.CommandLine.Lookup(name) != nil
-			if !found {
-				// Take first line of help only
-				help := strings.TrimSpace(opt.Help)
-				if nl := strings.IndexRune(help, '\n'); nl >= 0 {
-					help = help[:nl]
-				}
-				help = strings.TrimRight(strings.TrimSpace(help), ".!?")
-				if opt.IsPassword {
-					help += " (obscured)"
-				}
-				flag := pflag.CommandLine.VarPF(opt, name, opt.ShortOpt, help)
-				flags.SetDefaultFromEnv(pflag.CommandLine, name)
-				if _, isBool := opt.Default.(bool); isBool {
-					flag.NoOptDefVal = "true"
-				}
-				// Hide on the command line if requested
-				if opt.Hide&fs.OptionHideCommandLine != 0 {
-					flag.Hidden = true
-				}
-				backendFlags[name] = struct{}{}
-			} else {
-				fs.Errorf(nil, "Not adding duplicate flag --%s", name)
-			}
-			//flag.Hidden = true
+			backendFlags[name] = struct{}{}
 		}
 	}
 }
 
 // Main runs rclone interpreting flags and commands out of os.Args
 func Main() {
-	if err := random.Seed(); err != nil {
-		log.Fatalf("Fatal error: %v", err)
-	}
 	setupRootCommand(Root)
 	AddBackendFlags()
 	if err := Root.Execute(); err != nil {

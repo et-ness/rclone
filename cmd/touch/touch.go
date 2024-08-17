@@ -34,17 +34,16 @@ const (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &notCreateNewFile, "no-create", "C", false, "Do not create the file if it does not exist (implied with --recursive)")
-	flags.StringVarP(cmdFlags, &timeAsArgument, "timestamp", "t", "", "Use specified time instead of the current time of day")
-	flags.BoolVarP(cmdFlags, &localTime, "localtime", "", false, "Use localtime for timestamp, not UTC")
-	flags.BoolVarP(cmdFlags, &recursive, "recursive", "R", false, "Recursively touch all files")
+	flags.BoolVarP(cmdFlags, &notCreateNewFile, "no-create", "C", false, "Do not create the file if it does not exist (implied with --recursive)", "")
+	flags.StringVarP(cmdFlags, &timeAsArgument, "timestamp", "t", "", "Use specified time instead of the current time of day", "")
+	flags.BoolVarP(cmdFlags, &localTime, "localtime", "", false, "Use localtime for timestamp, not UTC", "")
+	flags.BoolVarP(cmdFlags, &recursive, "recursive", "R", false, "Recursively touch all files", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "touch remote:path",
 	Short: `Create new file or change file modification time.`,
-	Long: `
-Set the modification time on file(s) as specified by remote:path to
+	Long: `Set the modification time on file(s) as specified by remote:path to
 have the current time.
 
 If remote:path does not exist then a zero sized file will be created,
@@ -66,6 +65,7 @@ then add the ` + "`--localtime`" + ` flag.
 `,
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.39",
+		"groups":            "Filter,Listing,Important",
 	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
@@ -138,7 +138,12 @@ func Touch(ctx context.Context, f fs.Fs, remote string) error {
 		return err
 	}
 	fs.Debugf(nil, "Touch time %v", t)
-	file, err := f.NewObject(ctx, remote)
+	var file fs.Object
+	if remote == "" {
+		err = fs.ErrorIsDir
+	} else {
+		file, err = f.NewObject(ctx, remote)
+	}
 	if err != nil {
 		if errors.Is(err, fs.ErrorObjectNotFound) {
 			// Touching non-existent path, possibly creating it as new file

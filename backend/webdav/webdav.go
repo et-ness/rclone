@@ -92,19 +92,24 @@ func init() {
 				Value: "sharepoint-ntlm",
 				Help:  "Sharepoint with NTLM authentication, usually self-hosted or on-premises",
 			}, {
+				Value: "rclone",
+				Help:  "rclone WebDAV server to serve a remote over HTTP via the WebDAV protocol",
+			}, {
 				Value: "other",
 				Help:  "Other site/service or software",
 			}},
 		}, {
-			Name: "user",
-			Help: "User name.\n\nIn case NTLM authentication is used, the username should be in the format 'Domain\\User'.",
+			Name:      "user",
+			Help:      "User name.\n\nIn case NTLM authentication is used, the username should be in the format 'Domain\\User'.",
+			Sensitive: true,
 		}, {
 			Name:       "pass",
 			Help:       "Password.",
 			IsPassword: true,
 		}, {
-			Name: "bearer_token",
-			Help: "Bearer token instead of user/pass (e.g. a Macaroon).",
+			Name:      "bearer_token",
+			Help:      "Bearer token instead of user/pass (e.g. a Macaroon).",
+			Sensitive: true,
 		}, {
 			Name:     "bearer_token_command",
 			Help:     "Command to run to get a bearer token.",
@@ -144,7 +149,19 @@ Set to 0 to disable chunked uploading.
 `,
 			Advanced: true,
 			Default:  10 * fs.Mebi, // Default NextCloud `max_chunk_size` is `10 MiB`. See https://github.com/nextcloud/server/blob/0447b53bda9fe95ea0cbed765aa332584605d652/apps/files/lib/App.php#L57
-		}},
+		}, {
+			Name:     "owncloud_exclude_shares",
+			Help:     "Exclude ownCloud shares",
+			Advanced: true,
+			Default:  false,
+		}, {
+			Name:     "owncloud_exclude_mounts",
+			Help:     "Exclude ownCloud mounted storages",
+			Advanced: true,
+			Default:  false,
+		},
+			fshttp.UnixSocketConfig,
+		},
 	})
 }
 
@@ -160,6 +177,9 @@ type Options struct {
 	Headers            fs.CommaSepList      `config:"headers"`
 	PacerMinSleep      fs.Duration          `config:"pacer_min_sleep"`
 	ChunkSize          fs.SizeSuffix        `config:"nextcloud_chunk_size"`
+	ExcludeShares      bool                 `config:"owncloud_exclude_shares"`
+	ExcludeMounts      bool                 `config:"owncloud_exclude_mounts"`
+	UnixSocket         string               `config:"unix_socket"`
 }
 
 // Fs represents a remote webdav
@@ -441,7 +461,12 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		precision:   fs.ModTimeNotSupported,
 	}
 
-	client := fshttp.NewClient(ctx)
+	var client *http.Client
+	if opt.UnixSocket == "" {
+		client = fshttp.NewClient(ctx)
+	} else {
+		client = fshttp.NewClientWithUnixSocket(ctx, opt.UnixSocket)
+	}
 	if opt.Vendor == "sharepoint-ntlm" {
 		// Disable transparent HTTP/2 support as per https://golang.org/pkg/net/http/ ,
 		// otherwise any connection to IIS 10.0 fails with 'stream error: stream ID 39; HTTP_1_1_REQUIRED'
@@ -569,7 +594,8 @@ func (f *Fs) fetchAndSetBearerToken() error {
 	return nil
 }
 
-var validateNextCloudChunkedURL = regexp.MustCompile(`^.*/dav/files/[^/]+/?$`)
+// The WebDAV url can optionally be suffixed with a path. This suffix needs to be ignored for determining the temporary upload directory of chunks.
+var nextCloudURLRegex = regexp.MustCompile(`^(.*)/dav/files/([^/]+)`)
 
 // setQuirks adjusts the Fs for the vendor passed in
 func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
@@ -592,11 +618,18 @@ func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
 		f.propsetMtime = true
 		f.hasOCSHA1 = true
 		f.canChunk = true
-		if err := f.verifyChunkConfig(); err != nil {
-			return err
+
+		if f.opt.ChunkSize == 0 {
+			fs.Logf(nil, "Chunked uploads are disabled because nextcloud_chunk_size is set to 0")
+		} else {
+			chunksUploadURL, err := f.getChunksUploadURL()
+			if err != nil {
+				return err
+			}
+
+			f.chunksUploadURL = chunksUploadURL
+			fs.Debugf(nil, "Chunks temporary upload directory: %s", f.chunksUploadURL)
 		}
-		f.chunksUploadURL = f.getChunksUploadURL()
-		fs.Logf(nil, "Chunks temporary upload directory: %s", f.chunksUploadURL)
 	case "sharepoint":
 		// To mount sharepoint, two Cookies are required
 		// They have to be set instead of BasicAuth
@@ -610,7 +643,7 @@ func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
 		odrvcookie.NewRenew(12*time.Hour, func() {
 			spCookies, err := spCk.Cookies(ctx)
 			if err != nil {
-				fs.Errorf("could not renew cookies: %s", err.Error())
+				fs.Errorf(nil, "could not renew cookies: %s", err.Error())
 				return
 			}
 			f.srv.SetCookie(&spCookies.FedAuth, &spCookies.RtFa)
@@ -634,6 +667,10 @@ func (f *Fs) setQuirks(ctx context.Context, vendor string) error {
 		// so we must perform an extra check to detect this
 		// condition and return a proper error code.
 		f.checkBeforePurge = true
+	case "rclone":
+		f.canStream = true
+		f.precision = time.Second
+		f.useOCMtime = true
 	case "other":
 	default:
 		fs.Debugf(f, "Unknown vendor %q", vendor)
@@ -685,6 +722,7 @@ var owncloudProps = []byte(`<?xml version="1.0"?>
   <d:resourcetype />
   <d:getcontenttype />
   <oc:checksums />
+  <oc:permissions />
  </d:prop>
 </d:propfind>
 `)
@@ -729,7 +767,7 @@ func (f *Fs) listAll(ctx context.Context, dir string, directoriesOnly bool, file
 		}
 		return found, fmt.Errorf("couldn't list files: %w", err)
 	}
-	//fmt.Printf("result = %#v", &result)
+	// fmt.Printf("result = %#v", &result)
 	baseURL, err := rest.URLJoin(f.endpoint, opts.Path)
 	if err != nil {
 		return false, fmt.Errorf("couldn't join URL: %w", err)
@@ -777,6 +815,18 @@ func (f *Fs) listAll(ctx context.Context, dir string, directoriesOnly bool, file
 			}
 		} else {
 			if directoriesOnly {
+				continue
+			}
+		}
+		if f.opt.ExcludeShares {
+			// https: //owncloud.dev/apis/http/webdav/#supported-webdav-properties
+			if strings.Contains(item.Props.Permissions, "S") {
+				continue
+			}
+		}
+		if f.opt.ExcludeMounts {
+			// https: //owncloud.dev/apis/http/webdav/#supported-webdav-properties
+			if strings.Contains(item.Props.Permissions, "M") {
 				continue
 			}
 		}
@@ -1068,6 +1118,13 @@ func (f *Fs) copyOrMove(ctx context.Context, src fs.Object, remote string, metho
 	if err != nil {
 		return nil, fmt.Errorf("copy NewObject failed: %w", err)
 	}
+	if f.useOCMtime && resp.Header.Get("X-OC-Mtime") != "accepted" && f.propsetMtime && !dstObj.ModTime(ctx).Equal(src.ModTime(ctx)) {
+		fs.Debugf(dstObj, "Setting modtime after copy to %v", src.ModTime(ctx))
+		err = dstObj.SetModTime(ctx, src.ModTime(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("failed to set modtime: %w", err)
+		}
+	}
 	return dstObj, nil
 }
 
@@ -1315,14 +1372,37 @@ var owncloudPropset = `<?xml version="1.0" encoding="utf-8" ?>
 </D:propertyupdate>
 `
 
+var owncloudPropsetWithChecksum = `<?xml version="1.0" encoding="utf-8" ?>
+<D:propertyupdate xmlns:D="DAV:" xmlns:oc="http://owncloud.org/ns">
+ <D:set>
+  <D:prop>
+   <lastmodified xmlns="DAV:">%d</lastmodified>
+   <oc:checksums>
+	<oc:checksum>%s</oc:checksum>
+   </oc:checksums>
+  </D:prop>
+ </D:set>
+</D:propertyupdate>
+`
+
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	if o.fs.propsetMtime {
+		checksums := ""
+		if o.fs.hasOCSHA1 && o.sha1 != "" {
+			checksums = "SHA1:" + o.sha1
+		} else if o.fs.hasOCMD5 && o.md5 != "" {
+			checksums = "MD5:" + o.md5
+		}
+
 		opts := rest.Opts{
 			Method:     "PROPPATCH",
 			Path:       o.filePath(),
 			NoRedirect: true,
 			Body:       strings.NewReader(fmt.Sprintf(owncloudPropset, modTime.Unix())),
+		}
+		if checksums != "" {
+			opts.Body = strings.NewReader(fmt.Sprintf(owncloudPropsetWithChecksum, modTime.Unix(), checksums))
 		}
 		var result api.Multistatus
 		var resp *http.Response
@@ -1344,6 +1424,14 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 		if len(result.Responses) == 1 && result.Responses[0].Props.StatusOK() {
 			// update cached modtime
 			o.modTime = modTime
+			return nil
+		}
+		// got an error, but it's possible it actually worked, so double-check
+		newO, err := o.fs.NewObject(ctx, o.remote)
+		if err != nil {
+			return err
+		}
+		if newO.ModTime(ctx).Equal(modTime) {
 			return nil
 		}
 		// fallback
@@ -1472,7 +1560,6 @@ func (o *Object) updateSimple(ctx context.Context, body io.Reader, getBody func(
 		return err
 	}
 	return nil
-
 }
 
 // Remove an object
