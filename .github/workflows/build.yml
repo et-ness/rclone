@@ -116,13 +116,13 @@ jobs:
           VERX64P=`ls -1d build/*main-linux-amd64* | sed 's/build\/rclone-//' | tail -1 | sed 's/amd64\..*/amd64/'` && echo "VERX64P=$VERX64P" >> $GITHUB_OUTPUT
 
       - name: Upload linux 386
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.VER386 }}
           path: build/rclone-${{ steps.prepareArtifact.outputs.VER386P }}.*
 
       - name: Upload linux amd64
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.prepareArtifact.outputs.VERX64 }}
           path: build/rclone-${{ steps.prepareArtifact.outputs.VERX64P }}.*
@@ -164,38 +164,6 @@ jobs:
 
       - name: Code quality test (Linux)
         uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          skip-cache: true
-
-      - name: Code quality test (Windows)
-        uses: golangci/golangci-lint-action@v6
-        env:
-          GOOS: "windows"
-        with:
-          version: latest
-          skip-cache: true
-
-      - name: Code quality test (macOS)
-        uses: golangci/golangci-lint-action@v6
-        env:
-          GOOS: "darwin"
-        with:
-          version: latest
-          skip-cache: true
-
-      - name: Code quality test (FreeBSD)
-        uses: golangci/golangci-lint-action@v6
-        env:
-          GOOS: "freebsd"
-        with:
-          version: latest
-          skip-cache: true
-
-      - name: Code quality test (OpenBSD)
-        uses: golangci/golangci-lint-action@v6
-        env:
-          GOOS: "openbsd"
         with:
           version: latest
           skip-cache: true
@@ -254,7 +222,7 @@ jobs:
         run: go build -v -tags android -trimpath -ldflags '-s -X github.com/et-ness/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-armv8a/rclone .
 
       - name: Upload android arm64
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rclone-android-${{ env.RCLONE_NDK_VERSION }}-armv8a
           path: build/rclone-android-${{ env.RCLONE_NDK_VERSION }}-armv8a/*

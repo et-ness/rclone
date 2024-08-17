@@ -31,6 +31,7 @@ require (
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/dop251/scsu v0.0.0-20220106150536-84ac88021d00
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.0.5
+	github.com/et-ness/go-mega v0.0.0-20240817080917-de92e06af895
 	github.com/gabriel-vasile/mimetype v1.4.4
 	github.com/gdamore/tcell/v2 v2.7.4
 	github.com/go-chi/chi/v5 v5.1.0
@@ -68,8 +69,7 @@ require (
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
-	github.com/stretchr/testify v1.8.2
-	github.com/mywalkb/go-mega v0.0.0-20220911140206-54ce58cccff5
+	github.com/stretchr/testify v1.9.0
 	github.com/willscott/go-nfs v0.0.3-0.20240425122109-91bc38957cc9
 	github.com/winfsp/cgofuse v1.5.1-0.20221118130120-84c0898ad2e0
 	github.com/xanzy/ssh-agent v0.3.3

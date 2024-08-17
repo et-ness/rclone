@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	mega "github.com/mywalkb/go-mega"
+	mega "github.com/et-ness/go-mega"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
